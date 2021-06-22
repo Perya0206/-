@@ -1,0 +1,364 @@
+const { VK, Keyboard } = require('vk-io')
+const VKC = require('node-vkcoinapi')
+const mongoose = require('mongoose')
+const fs = require('fs')
+const { QuestionManager } = require('vk-io-question');
+const config = require('./config.json')
+const utils = require('./utils')
+const questionManager = new QuestionManager();
+
+mongoose.connect(config.mongodb, {
+  useNewUrlParser: true,
+  useUnifiedTopology: true,
+})
+
+const vk = new VK({
+  token: config.botToken,
+  apiMode: 'parallel',
+  apiLimit: 20,
+})
+
+const vkcoin = new VKC({
+  key: config.bot.key,
+  userId: config.bot.id,
+  token: config.bot.token,
+})
+
+const userSchema = {
+  id: {
+    type: Number,
+    required: true,
+  },
+  refId: {
+    type: Number,
+  },
+  referrals: {
+    type: Number,
+    required: true,
+    default: 0,
+  },
+  firstName: {
+    type: String,
+    required: true,
+  },
+  balance: {
+    type: Number,
+    required: true,
+    default: 0,
+  },
+  depositBalance: {
+    type: Number,
+    required: true,
+    default: 0,
+  },
+  replenishBalance: {
+    type: Number,
+    required: true,
+    default: 0,
+  },
+  reposts: [{
+    type: Number,
+  }],
+  isAdmin: {
+    type: Boolean,
+    required: true,
+    default: false,
+  },
+}
+
+const User = mongoose.model('User', userSchema)
+
+async function getUser (id, refId = 0) {
+  let user = await User.findOne({ id })
+  if (!user) {
+    const { first_name } = (await vk.api.users.get({ user_ids: id }))[0]
+    user = new User({id, refId, firstName: first_name, replenishBalance: refId ? 100000 : 0})
+    await user.save()
+    const refUser = await User.findOne({ id: refId })
+    if (refUser) {
+      refUser.replenishBalance += 100000
+      refUser.referrals++
+      await refUser.save()
+    }
+  }
+  return user
+}
+
+const procent = 2;
+
+function KeybroadPrivate (user) {
+	const array = [
+    [
+      Keyboard.textButton({
+        label: '📈 Инвестировать',
+        color: Keyboard.POSITIVE_COLOR,
+      }),
+     ],
+     [
+      Keyboard.textButton({
+        label: '👤 Профиль',
+        color:Keyboard.PRIMARY_COLOR,
+      }),
+      Keyboard.textButton({
+        label: '🏆 Топ игроков',
+        color: Keyboard.PRIMARY_COLOR,
+      }),
+     ],
+     [
+    Keyboard.applicationButton({
+      appId: 6915965,
+      hash: `x${config.bot.id}_10000000_0_1`,
+      label: 'Пополнить',
+    }),
+      Keyboard.textButton({
+        label: '📤 Вывести',
+        color:Keyboard.NEGATIVE_COLOR,
+			}),
+		],
+	]
+	
+	if (user.isAdmin) {
+		array.push([
+			Keyboard.textButton({
+				color: Keyboard.NEGATIVE_COLOR,
+				label: '😎 Админ-Панель',
+			}),
+		])
+	}
+	
+	return Keyboard.keyboard(array)
+}
+
+const topKeyboard = Keyboard.keyboard([
+  [
+    Keyboard.textButton({
+      color: Keyboard.PRIMARY_COLOR,
+      label: '🏆 Топ инвесторов',
+    }),
+    Keyboard.textButton({
+      color: Keyboard.PRIMARY_COLOR,
+      label: '🏆 Топ рефералов',
+    }),
+  ],
+  [
+    Keyboard.textButton({ color: Keyboard.NEGATIVE_COLOR, label: 'Меню', }),
+  ],
+]).oneTime()
+
+const KeyboardCancel = Keyboard.keyboard([
+	[
+		Keyboard.textButton({ label: 'Назад', color: Keyboard.NEGATIVE_COLOR }), 
+	],
+])
+
+// - - - - - Старт - - - - - //
+
+vk.updates.hear(/^(старт|start|начать|меню)/i, async (context) => {
+ context.send(`🎉Добро пожаловать в инвестиционный проект на VKCoin's — VkCoin Invest!`, { keyboard: KeybroadPrivate(_users) })
+})
+
+// - - - - - Инвестировать- - - - - //
+
+vk.updates.hear(/^📈 инвестировать/i, async (context) => {
+let id = context.senderId
+let user = await User.findOne({ id: id })
+const sum = await context.question(`💰 Вы можете инвестировать: ${utils.split(user.replenishBalance)} VkCoin
+
+	💶 Баланс для инвестиций: ${utils.split(user.replenishBalance)} VkCoin
+	💷 Баланс для вывода: ${utils.split(user.balance)} VkCoin
+
+	💲Введите сумму которую хотите инвестировать:`, { keyboard: KeyboardCancel })
+  if(sum.text == 'Назад') {
+	return context.send('✅ Вы вернулись в главное меню!', { keyboard: KeybroadPrivate(_users) })
+	}
+const amount = Number(Number.parseFloat(sum.text.replace(/\s/g, '')).toFixed(3))
+  if(!amount || isNaN(amount)) {
+return context.send('Вы ввели что-то не правильно!', { keyboard: KeybroadPrivate(_users) })
+}
+  if(amount > user.replenishBalance) {
+  return context.send(`На твоём балансе недостаточно коинов.`)
+}
+  if(amount < 1) {
+return context.send(`Минимальная сумма инвестиции 1 коин!`)
+}
+  user.replenishBalance -= amount
+  user.depositBalance += amount
+    await user.save()
+await context.send(`✅ Вы успешно инвестировали ${utils.split(amount)} VkCoin`)
+})
+
+// - - - - - Админка - - - - - //
+
+vk.updates.hear(/^😎 Админ-Панель/i, async (context) => {
+	if (!_users.isAdmin) return
+	await context.send(`😎 Выбери админ-команду на клавиатуре.`, { keyboard: Keyboard.keyboard([
+		[
+			Keyboard.textButton({ label: "🤑 Раздача", color: Keyboard.POSITIVE_COLOR }), 
+		],
+		[
+            Keyboard.textButton({ label: "💰Сумма бонуса", color: Keyboard.PRIMARY_COLOR }),		
+        ],
+        [
+			Keyboard.textButton({ label: "Меню", color: Keyboard.NEGATIVE_COLOR }),		
+		]
+	])
+	})
+})
+
+// - - - - - Раздача - - - - - //
+
+vk.updates.hear(/^(?:\s+)?🤑 Раздача/i, async (context) => {
+	if (!_users.isAdmin) return
+	const args = await context.question(`🍀 Текущий айди поста: ${config.post}
+	✅ Введи айди нового поста:`, { keyboard: KeyboardCancel })
+	if(args.text == `Назад`) {
+		return context.send(`Вы успешно отменили смену айди поста.`, { keyboard: KeybroadPrivate(_users) })
+	}
+	const post_id = Number.parseFloat(args.text)
+	if(!post_id) {
+		return context.send(`Главное меню:`, { keyboard: KeybroadPrivate(_users) }, { keyboard: KeybroadPrivate(_users) })
+	}
+	config.post = post_id 
+	fs.writeFileSync('./config.json', JSON.stringify(config, null, 2))
+    await context.send(`✅ Айди поста изменён на: ${post_id}`,  { keyboard: KeybroadPrivate(_users) });
+})
+
+// - - - - - Сумма бонуса - - - - - //
+
+vk.updates.hear(/^(?:\s+)?💰Сумма бонуса/i, async (context) => {
+	if (!_users.isAdmin) return
+	const args = await context.question(`🍀 Текущая сумма бонуса: ${config.sumpost}
+	✅ Введи айди нового поста:`, { keyboard: KeyboardCancel })
+	if(args.text == `Назад`) {
+		return context.send(`Вы успешно отменили смену суммы бонуса.`, { keyboard: KeybroadPrivate(_users) })
+	}
+	const post_sum = Number.parseFloat(args.text)
+	if(!post_sum) {
+		return context.send(`Главное меню:`, { keyboard: KeybroadPrivate(_users) }, { keyboard: KeybroadPrivate(_users) })
+	}
+	config.sumpost = post_sum
+	fs.writeFileSync('./config.json', JSON.stringify(config, null, 2))
+    await context.send(`✅ Сумма бонуса изменёна на: ${post_sum}`,  { keyboard: KeybroadPrivate(_users) });
+})
+
+// - - - - - Профиль - - - - - //
+
+vk.updates.hear(/^👤 профиль/i, async (context) => {
+let id = context.senderId
+let user = await User.findOne({ id: id })
+await context.send(`💴 Баланс для вывода: ${utils.split(user.balance)} VkCoin
+💵 Баланс для инвестиций: ${utils.split(user.replenishBalance)} VkCoin
+
+💰Вы инвестировали: ${utils.split(user.depositBalance)} VkCoin
+
+🚀 Ваша реферальная ссылка: vk.me/public199863656?ref=${context.senderId}
+🧸 Вы пригласили: ${user.referrals} пользователей.`)
+})
+
+// - - - - - Вывод - - - - - //
+vk.updates.hear(/^📤 вывести/i, async (context) => {
+      const { balance } = _users
+      const vkcbalance = await vkcoin.api.getMyBalance()
+  if(balance < 1) {
+return context.send(`Минимальная сумма вывода 1 VkCoin`, { keyboard: KeybroadPrivate(_users) })
+}
+  if(balance > vkcbalance) {
+return context.send(`❗У бота недостаточно коинов для выплаты!`, { keyboard: KeybroadPrivate(_users) })
+}
+  _users.balance = 0
+  await _users.save()
+    try {
+        await vkcoin.api.sendPayment(context.senderId, balance * 1000, true)
+        await context.send(`✅ Выведено ${utils.split(balance)} VkCoin`, { keyboard: KeybroadPrivate(_users) })
+    } catch (_) {
+        await context.send(`Во время вывода произошла ошибка, обратитесь к администратору!`)
+  }
+}) 
+
+// - - - - - Топы - - - - - //
+
+vk.updates.hear(/^🏆 топ(\s+рефералов)/i, async (context) => {
+      const topWins = await User.find({}).sort({ referrals: -1 }).limit(5)
+      let message = '🏆 Топ рефералов:'
+  topWins.forEach((item, index) => {
+      message += `\n${index + 1}. [id${item.id}|${item.firstName}] пригласил ${utils.split(item.referrals)} пользователей`
+})
+await context.send(message, { keyboard: KeybroadPrivate(_users) })
+})
+
+vk.updates.hear(/^🏆 топ(\s+инвесторов)/i, async (context) => {
+      const topWins = await User.find({}).sort({ depositBalance: -1 }).limit(5)
+      let message = '🏆 Топ инвесторов:'
+  topWins.forEach((item, index) => {
+      message += `\n${index + 1}. [id${item.id}|${item.firstName}] инвестировал ${utils.split(item.depositBalance)} VkCoin`
+})
+await context.send(message, { keyboard: KeybroadPrivate(_users) })
+})
+
+vk.updates.hear(/^🏆 топ игроков/i, async (context) => {
+await context.send(`🏆 Выбери топ который хочешь посмотреть:`, { keyboard: topKeyboard })
+})
+
+vk.updates.on('message', async (context, next) => {
+  if (context.senderId < 0) return
+  _users = await getUser(context.senderId, context.referralValue)
+
+  return next()
+})
+
+vk.updates.on('new_wall_repost', async (context) => {
+  const user = await User.findOne({ id: context.wall.ownerId })
+  if (!user || user.reposts.includes(context.wall.copyHistory[0].id)) return
+  const lastPostId = config.post
+  if (lastPostId !== context.wall.copyHistory[0].id) return
+  let a = await vk.api.groups.isMember({ group_id: АЙДИ ГРУППЫ, user_id: context.wall.ownerId })
+  if(a == 0){
+    return context.send(`💰Чтобы получить бонус необходимо быть подписанным на сообщество.`)
+  }
+  user.reposts.push(context.wall.copyHistory[0].id)
+  await user.save()
+  user.replenishBalance += config.sumpost
+  await user.save()
+  await vk.api.messages.send({
+    user_id: context.wall.ownerId,
+    message: `🚀 Вы получили ${config.sumpost} VkCoin за репост!
+✅ Коины начислены на баланс для инвестиций.`,
+  })
+})
+
+vkcoin.updates.startPolling().catch(console.error)
+vk.updates.start().catch(console.error)
+vk.updates.use(questionManager.middleware);
+
+vkcoin.updates.onTransfer(async (event) => {
+  const user = await User.findOne({ id: event.fromId })
+  if (!user) {
+    return
+  }
+  user.replenishBalance += event.amount / 1000
+  await user.save()
+  await vk.api.messages.send({
+    peer_id: event.fromId,
+    message: `✅ Ваш баланс пополнен на ${utils.split(event.amount / 1000)} VkCoin`,
+    disable_mentions: true,
+  })
+})
+
+async function update() {
+  let userList = await User.find({});
+userList.forEach(async element => {
+  if (element.depositBalance === 0) { return
+  }
+    element.balance += element.depositBalance * (procent / (24*60)) / 100
+await User.updateOne({ 'id': element.id }, { $set: { 'balance': element.balance, 'depositBalance': element.depositBalance, } }, 
+  function (err) {
+     if (err) throw err
+})
+ })
+}
+
+setInterval(async() => {
+  update(); 
+}, 60000); 
+
+console.log('Started') 
